@@ -5,6 +5,7 @@ __pycache__/
 
 # C extensions
 *.so
+*.s
 
 # Distribution / packaging
 .Python
@@ -31,7 +32,10 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+*.out
 
+# folders
+auto_*
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
