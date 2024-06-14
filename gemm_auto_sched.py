@@ -1,16 +1,15 @@
 import numpy as np
 import tvm
 import os
-from tvm import te, auto_scheduler
+from tvm import te, auto_scheduler, relay
 import sys
 import math
 
 from cache_model import *
 
-def eg_matmul(M, N, K, mc, nc, kc, mr, nr, lane, laneC, dtypeA, dtypeB, dtypeC, target, target2):
+def eg_gemm(M, N, K, mc, nc, kc, mr, nr, lane, laneC, dtypeA, dtypeB, dtypeC, target): #, target2):
     A = te.placeholder((M, K), name="A", dtype=dtypeA)
     B = te.placeholder((K, N), name="B", dtype=dtypeB)
-    C = te.placeholder((M, N), name="C", dtype=dtypeC)
     k = te.reduce_axis((0, K), name="k")
     zero = te.var(name='zero', dtype=dtypeC, span=None)
     unroll_factor=4
@@ -69,7 +68,7 @@ def eg_matmul(M, N, K, mc, nc, kc, mr, nr, lane, laneC, dtypeA, dtypeB, dtypeC, 
     ac = te.compute(( math.ceil(K/kc), math.ceil(M/mr), kc, mr), lambda am, an, az, al: Ac[ am, an, az, al], name='ac')
     bc = te.compute(( math.ceil(K/kc), math.ceil(N/nr), kc, nr), lambda bm, bn, bz, bl: Bc[ bm, bn, bz, bl ], name='bc')
 
-    matmul = te.compute(
+    C = te.compute(
             (M, N),
             lambda i, j:
             te.sum(
@@ -78,30 +77,30 @@ def eg_matmul(M, N, K, mc, nc, kc, mr, nr, lane, laneC, dtypeA, dtypeB, dtypeC, 
                 bc[k//kc, j//nr,tvm.tir.indexmod(k,kc), tvm.tir.indexmod(j,nr) ]
                 ,
                 axis=k),
-            name="matmul",
+            name="C",
             )
 
-    s = te.create_schedule(matmul.op)
+    s = te.create_schedule(C.op)
      
-    ic, jc, icin, jcin= s[matmul].tile(matmul.op.axis[0], matmul.op.axis[1], mc, nc)
+    ic, jc, icin, jcin= s[C].tile(C.op.axis[0], C.op.axis[1], mc, nc)
     
-    ir, it = s[matmul].split( icin, factor = mr )
-    jr, jt = s[matmul].split( jcin, factor = nr )
+    ir, it = s[C].split( icin, factor = mr )
+    jr, jt = s[C].split( jcin, factor = nr )
     
-    p, = s[matmul].op.reduce_axis
-    pc, pr = s[matmul].split(p, factor=kc)
+    p, = s[C].op.reduce_axis
+    pc, pr = s[C].split(p, factor=kc)
      
-    s[matmul].reorder(jc, pc, ic, jr, ir, pr, it, jt)
+    s[C].reorder(jc, pc, ic, jr, ir, pr, it, jt)
      
-    s[matmul].unroll(it)
-    jto, jti = s[matmul].split(jt, factor=laneC)
-    s[matmul].vectorize(jti)
-    s[matmul].unroll(jto)
+    s[C].unroll(it)
+    jto, jti = s[C].split(jt, factor=laneC)
+    s[C].vectorize(jti)
+    s[C].unroll(jto)
      
-    s[Ac].compute_at(s[matmul],ic)
-    s[Bc].compute_at(s[matmul],pc)
-    s[ac].compute_at(s[matmul],pr)
-    s[bc].compute_at(s[matmul],pr)
+    s[Ac].compute_at(s[C],ic)
+    s[Bc].compute_at(s[C],pc)
+    s[ac].compute_at(s[C],pr)
+    s[bc].compute_at(s[C],pr)
 
     b0, b1, b2, b3 = Bc.op.axis
     b30, b31 = s[Bc].split(b3, factor=lane)
@@ -125,24 +124,35 @@ def eg_matmul(M, N, K, mc, nc, kc, mr, nr, lane, laneC, dtypeA, dtypeB, dtypeC, 
     s[bc].unroll(b30)
     s[bc].vectorize(b31)
 
-    s[matmul].pragma(jc, "auto_unroll_max_step", 64)
-    s[matmul].pragma(jc, "unroll_explicit", True)
+    #s[C].pragma(jc, "auto_unroll_max_step", 64)
+    #s[C].pragma(jc, "unroll_explicit", True)
     
     with tvm.transform.PassContext(config={"tir.LoopPartition": {"partition_const_loop": True}}):
-        f = tvm.lower(s, [A, B, matmul,zero], name="gemm", simple_mode=False)
-        print(f)
-        name="eg_matmul_{}_{}_{}_{}_{}".format(M,N,K, mr, nr)
+        f = tvm.lower(s, [A, B, C,zero], name="gemm", simple_mode=False)
+        folder=dtypeA+dtypeB+dtypeC
+        if not os.path.exists("asm/{}".format(folder)):
+            os.makedirs("asm/{}".format(folder))
+        
+        name="eg_gemm_{}_{}_{}_{}_{}".format(M,N,K, mr, nr)
         func = tvm.build(f, target=target)
-        func.save("asm/{}.s".format(name), 's')
+        func.save("asm/{}/{}.s".format(folder,name), 's')
+        
+        fadd_syslib = tvm.build(s, [A, B, C,zero],target=target,name=name,
+                runtime=relay.backend.Runtime("cpp", {"system-lib": True}),)
         curr_path = os.path.dirname(os.path.abspath(os.path.expanduser(__file__)))
+        if not os.path.exists("{}/{}".format(curr_path,"lib")):
+            os.makedirs("{}/{}".format(curr_path,"lib"))
         base_path=os.path.join(curr_path, "lib")
-        func_save = tvm.build(s, [A, B, C], target=target2, name=name)
-        syslib_path = os.path.join(base_path, name+".o")
-        func_save.save(syslib_path)
+
+        if not os.path.exists("{}/{}".format(base_path,folder)):
+            os.makedirs("{}/{}".format(base_path,folder))
+        
+        syslib_path = os.path.join(base_path, "{}/{}.o".format(folder,name))
+        fadd_syslib.save(syslib_path)
         return func
 
 @auto_scheduler.register_workload
-def matmul_blis(M, N, K,  mc, nc, kc, mr, nr, dtypeA, dtypeB, dtypeC, test):
+def gemm_blis(M, N, K,  mc, nc, kc, mr, nr, dtypeA, dtypeB, dtypeC, test):
     A = te.placeholder((M, K), name="A", dtype=dtypeA)
     B = te.placeholder((K, N), name="B", dtype=dtypeB)
     k = te.reduce_axis((0, K), name="k")
@@ -200,7 +210,7 @@ def matmul_blis(M, N, K,  mc, nc, kc, mr, nr, dtypeA, dtypeB, dtypeC, test):
     
     bc = te.compute(( math.ceil(K/kc), math.ceil(N/nr), kc, nr), lambda bm, bn, bz, bl: Bc[ bm, bn, bz, bl ], name='bc')
     
-    matmul = te.compute(
+    C = te.compute(
             (M, N),
             lambda i, j:
             te.sum(
@@ -209,47 +219,41 @@ def matmul_blis(M, N, K,  mc, nc, kc, mr, nr, dtypeA, dtypeB, dtypeC, test):
                 bc[k//kc, j//nr,tvm.tir.indexmod(k,kc), tvm.tir.indexmod(j,nr) ]
                 ,
                 axis=k),
-            name="matmul",
+            name="C",
             )
         
-    return [A, B, matmul,zero]
+    return [A, B, C,zero]
 
 @auto_scheduler.register_workload
-def matmul_add(M, N, K, dtypeA, dtypeB, dtypeC, test):
+def gemm_add(M, N, K, dtypeA, dtypeB, dtypeC, test):
     A = te.placeholder((M, K), name="A", dtype=dtypeA)
     B = te.placeholder((K, N), name="B", dtype=dtypeB)
-    C = te.placeholder((M, N), name="C", dtype=dtypeC)
     zero = te.var(name='zero', dtype=dtypeC, span=None)
     
     k = te.reduce_axis((0, K), name="k")
     if dtypeA == dtypeB == dtypeC:
-        matmul = te.compute(
+        C = te.compute(
             (M, N),
             lambda i, j: te.sum(A[i, k] * B[k, j], axis=k),
-            name="matmul",
+            name="C",
             attrs={"layout_free_placeholders": [B]},  # enable automatic layout transform for tensor B
             )
     else:
-        matmul = te.compute(
+        C = te.compute(
             (M, N),
             lambda i, j: te.sum((A[i, k].astype(dtypeC) * B[k, j].astype(dtypeC)), axis=k),
-            #lambda i, j: te.sum(((A[i, k] * B[k, j]).astype(dtypeC)), axis=k),
-            name="matmul",
+            name="C",
             attrs={"layout_free_placeholders": [B]},  # enable automatic layout transform for tensor B
             )
-    #out = te.compute((M, N), lambda i, j: matmul[i, j] + C[i, j], name="out")
             
-    #return [A, B, C, out]
-    return [A, B, matmul]
+    return [A, B, C]
 
 
-def main(M,N,K,test,trials, blis=0, eg=0, cfg="carmel"):
+def main(M,N,K,test,trials, blis=0, eg=0, cfg="carmel", cross=0, c_driver=0):
     if cfg == "carmel":
         target = tvm.target.Target("llvm  -device=arm_cpu -mattr=+v8.2a,+fp-armv8,+neon,+fp16fml,+fullfp16")
-        target2 = tvm.target.Target("llvm  --system-lib -device=arm_cpu -mattr=+v8.2a,+fp-armv8,+neon,+fp16fml,+fullfp16")
     else:
         target = tvm.target.Target("llvm")
-        target = tvm.target.Target("llvm --system-lib")
 
     if test == 1:
         typeA="float32"
@@ -355,29 +359,37 @@ def main(M,N,K,test,trials, blis=0, eg=0, cfg="carmel"):
         bestmr=-1
         bestnr=-1
         cfg_file=cfg+".cfg"
+        if c_driver != 0:
+            print("Executing c_driver...")
+            os.system("./c_driver/test_driver_c {} {} {} {} {} {} {} {} {}".format( M, N, K, ini, maxm, stride, ini, maxn, stride))
         for mr in range(ini,maxm,stride):
             for nr in range(ini,maxn,stride):
-                mc, nc, kc = get_optim_mc_nc_kc(datasize,M,N,K,mr,nr,cfg_file)
-                matmul = eg_matmul(M, N, K, mc, nc, kc, mr, nr, lane, laneC, typeA, typeB, typeC, target)
-                matmul(a_tvm, b_tvm, out_tvm,zero)
 
-                evaluator = matmul.time_evaluator(matmul.entry_name, dev, min_repeat_ms=1500)
-                tt = np.median(evaluator(a_tvm, b_tvm, out_tvm,zero).results)
-                gflops = ((2.0 * M * N * K)/(1e9*1.0))/tt
-                if gflops > best:
-                    best = gflops
-                    bestmr=mr
-                    bestnr=nr
-                print("test: {} {} {} {} {} {} {} {}: {} gflops".format(M,N,K,mr,nr,mc, nc, kc, gflops))
-        print("Best: {} {} {} {} {}: {}".format(M,N,K,bestmr,bestnr,best))
+                if c_driver != 0:
+                    pass
+                else:
+                    mc, nc, kc = get_optim_mc_nc_kc(datasize,M,N,K,mr,nr,cfg_file)
+                    gemm = eg_gemm(M, N, K, mc, nc, kc, mr, nr, lane, laneC, typeA, typeB, typeC, target)
+                    gemm(a_tvm, b_tvm, out_tvm,zero)
+
+                    evaluator = gemm.time_evaluator(gemm.entry_name, dev, min_repeat_ms=1500)
+                    tt = np.median(evaluator(a_tvm, b_tvm, out_tvm,zero).results)
+                    gflops = ((2.0 * M * N * K)/(1e9*1.0))/tt
+                    if gflops > best:
+                        best = gflops
+                        bestmr=mr
+                        bestnr=nr
+                    print("test: {} {} {} {} {} {} {} {}: {} gflops".format(M,N,K,mr,nr,mc, nc, kc, gflops))
+        if c_driver == 0:
+            print("Best: {} {} {} {} {}: {}".format(M,N,K,bestmr,bestnr,best))
     else:    
         if blis == 1:
             mr=8
             nr=32
             mc, nc, kc = get_optim_mc_nc_kc(datasize,M,N,K,mr,nr,cfg_file)
-            task = tvm.auto_scheduler.SearchTask(func=matmul_blis, args=(M, N, K, mc, nc, kc, mr, nr, typeA, typeB, typeC, test), target=target)
+            task = tvm.auto_scheduler.SearchTask(func=gemm_blis, args=(M, N, K, mc, nc, kc, mr, nr, typeA, typeB, typeC, test), target=target)
         else:
-            task = tvm.auto_scheduler.SearchTask(func=matmul_add, args=(M, N, K, typeA, typeB, typeC, test), target=target)
+            task = tvm.auto_scheduler.SearchTask(func=gemm_add, args=(M, N, K, typeA, typeB, typeC, test), target=target)
         folder=typeA+typeB+typeC
         # Inspect the computational graph
         print("Computational DAG:")
@@ -419,8 +431,8 @@ def main(M,N,K,test,trials, blis=0, eg=0, cfg="carmel"):
         print(
             "{} {} {}: {} s {} gflops".format(M,N,K,time, gflops) #(np.median(evaluator(a_tvm, b_tvm, out_tvm).results) * 1000)            #% (np.median(evaluator(a_tvm, b_tvm, c_tvm, out_tvm).results) * 1000)
     )
-    print("Equivalent python schedule:")
-    print(task.print_best(log_file))
+        print("Equivalent python schedule:")
+        print(task.print_best(log_file))
 
 if __name__ == "__main__":
     bs = 1 
@@ -430,6 +442,8 @@ if __name__ == "__main__":
     blis = int(sys.argv[4]) if len(sys.argv) > 4 else 0
     google = int(sys.argv[5]) if len(sys.argv) > 5 else 0
     cfg = sys.argv[6] if len(sys.argv) > 6 else "carmel"
+    cross = int(sys.argv[7]) if len(sys.argv) > 7 else 0
+    c_driver = int(sys.argv[8]) if len(sys.argv) > 8 else 0
     MNK=[
             [12544*bs, 64, 147], 
             [3136*bs, 64, 64],
@@ -459,10 +473,12 @@ if __name__ == "__main__":
             ]
     #MNK = [[49*bs, 2048, 512]]
     #MNK = [[2048, 49, 512]]
-    MNK =  [[12544, 64, 147]] 
-    MNK = [[1024,1024,1024]]
+    MNK =  [[12544, 64, 147], [1024,1024,1024]]
     if google != 0:
         import googlenet as gl
         MNK = gl.googlenet(bs)
+    
+    if c_driver != 0:
+        print("Executing c_driver...")
     for M, N, K in MNK:
-       main(M,N,K, test,trials, blis, eg,cfg)
+        main(M,N,K, test,trials, blis, eg,cfg, cross, c_driver)

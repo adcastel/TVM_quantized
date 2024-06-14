@@ -36,6 +36,8 @@ MANIFEST
 
 # folders
 auto_*
+*.o
+test_driver_c
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt

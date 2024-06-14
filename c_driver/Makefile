@@ -16,13 +16,13 @@
 # under the License.
 
 # Makefile Example to deploy TVM modules.
-TVM_ROOT=/home/adcastel/src/tvm_riscv
+TVM_ROOT=/home/adcastel/src/tvm
 #TVM_ROOT=/Users/adcastel/opt/tvm
 #TVM_ROOT=${TVM_HOME}
 
 DMLC_CORE=${TVM_ROOT}/3rdparty/dmlc-core
 
-PKG_CFLAGS = -std=c++14 -O3 -fPIC\
+PKG_CFLAGS = -std=c++17 -O2 -fPIC\
 	-I${TVM_ROOT}/include\
 	-I${DMLC_CORE}/include\
 	-I${TVM_ROOT}/3rdparty/dlpack/include\
@@ -31,10 +31,13 @@ PKG_CFLAGS = -std=c++14 -O3 -fPIC\
 CXX=g++
 #CXX=clang++-10
 PKG_LDFLAGS = -L${TVM_ROOT}/build -ldl -pthread
-OBJS=$(wildcard lib/*.o)
+DTYPEA=float32
+DTYPEB=float32
+DTYPEC=float32
+OBJS=$(wildcard ../lib/${DTYPEA}${DTYPEB}${DTYPEC}/*.o)
 .PHONY: clean all
 
-MICRO = lib/gemm_$(M)_$(N)_$(K)_$(MR)_$(NR)_$(LS).o \
+#MICRO = ../lib/eg_matmul_$(M)_$(N)_$(K)_$(MR)_$(NR).o \
 	libtvm_runtime_pack.o
 #
 #all: start test_driver_c run
@@ -42,10 +45,10 @@ all: test_driver_c
 
 start:
 	mkdir -p lib
-	python3 B3A2C0.py --M $(M) --N $(N) --K $(K) --MC $(MC) --NC $(NC) --KC $(KC) --MR $(MR) --NR $(NR) --KR $(KR) --LS $(LS)
+	TVM_NUM_THREADS=1 python3.8  -u gemm_auto_sched.py $(EG) $(TEST) $(TRIALS) $(BLIS) $(MODEL) $(DEV)
 
 run:
-	./test_driver_c $(M) $(N) $(K) $(MR) $(NR) $(LS)
+	./test_driver_c $(M) $(N) $(K) $(MR) $(NR)
 
 # Build rule for all in one TVM package library
 libtvm_runtime_pack.o: tvm_runtime_pack.cc
