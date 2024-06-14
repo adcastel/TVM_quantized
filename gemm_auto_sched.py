@@ -7,7 +7,7 @@ import math
 
 from cache_model import *
 
-def eg_matmul(M, N, K, mc, nc, kc, mr, nr, lane, laneC, dtypeA, dtypeB, dtypeC, target):
+def eg_matmul(M, N, K, mc, nc, kc, mr, nr, lane, laneC, dtypeA, dtypeB, dtypeC, target, target2):
     A = te.placeholder((M, K), name="A", dtype=dtypeA)
     B = te.placeholder((K, N), name="B", dtype=dtypeB)
     C = te.placeholder((M, N), name="C", dtype=dtypeC)
@@ -125,14 +125,20 @@ def eg_matmul(M, N, K, mc, nc, kc, mr, nr, lane, laneC, dtypeA, dtypeB, dtypeC, 
     s[bc].unroll(b30)
     s[bc].vectorize(b31)
 
-    #s[matmul].pragma(jc, "auto_unroll_max_step", 64)
-    #s[matmul].pragma(jc, "unroll_explicit", True)
+    s[matmul].pragma(jc, "auto_unroll_max_step", 64)
+    s[matmul].pragma(jc, "unroll_explicit", True)
     
     with tvm.transform.PassContext(config={"tir.LoopPartition": {"partition_const_loop": True}}):
         f = tvm.lower(s, [A, B, matmul,zero], name="gemm", simple_mode=False)
         print(f)
+        name="eg_matmul_{}_{}_{}_{}_{}".format(M,N,K, mr, nr)
         func = tvm.build(f, target=target)
-        func.save("B3A2C0_{}x{}.s".format(mr, nr), 's')
+        func.save("asm/{}.s".format(name), 's')
+        curr_path = os.path.dirname(os.path.abspath(os.path.expanduser(__file__)))
+        base_path=os.path.join(curr_path, "lib")
+        func_save = tvm.build(s, [A, B, C], target=target2, name=name)
+        syslib_path = os.path.join(base_path, name+".o")
+        func_save.save(syslib_path)
         return func
 
 @auto_scheduler.register_workload
@@ -238,11 +244,12 @@ def matmul_add(M, N, K, dtypeA, dtypeB, dtypeC, test):
 
 
 def main(M,N,K,test,trials, blis=0, eg=0, cfg="carmel"):
-    
     if cfg == "carmel":
         target = tvm.target.Target("llvm  -device=arm_cpu -mattr=+v8.2a,+fp-armv8,+neon,+fp16fml,+fullfp16")
+        target2 = tvm.target.Target("llvm  --system-lib -device=arm_cpu -mattr=+v8.2a,+fp-armv8,+neon,+fp16fml,+fullfp16")
     else:
         target = tvm.target.Target("llvm")
+        target = tvm.target.Target("llvm --system-lib")
 
     if test == 1:
         typeA="float32"
@@ -348,13 +355,8 @@ def main(M,N,K,test,trials, blis=0, eg=0, cfg="carmel"):
         bestmr=-1
         bestnr=-1
         cfg_file=cfg+".cfg"
-        ini=4
-        inin=24
-        maxm=5
-        maxn=25
-        stride=8
         for mr in range(ini,maxm,stride):
-            for nr in range(inin,maxn,stride):
+            for nr in range(ini,maxn,stride):
                 mc, nc, kc = get_optim_mc_nc_kc(datasize,M,N,K,mr,nr,cfg_file)
                 matmul = eg_matmul(M, N, K, mc, nc, kc, mr, nr, lane, laneC, typeA, typeB, typeC, target)
                 matmul(a_tvm, b_tvm, out_tvm,zero)
