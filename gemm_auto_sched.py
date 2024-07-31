@@ -252,6 +252,8 @@ def gemm_add(M, N, K, dtypeA, dtypeB, dtypeC, test):
 def main(M,N,K,test,trials, blis=0, eg=0, cfg="carmel", cross=0, c_driver=0):
     if cfg == "carmel":
         target = tvm.target.Target("llvm  -device=arm_cpu -mattr=+v8.2a,+fp-armv8,+neon,+fp16fml,+fullfp16")
+    elif cfg == "c906":
+        target = tvm.target.Target("llvm -mtriple=riscv64-unknown-linux-gnu -mcpu=generic-rv64 -mabi=lp64d -mattr=+64bit,+m,+a,+f,+d,+c,+v")
     else:
         target = tvm.target.Target("llvm")
 
@@ -360,8 +362,8 @@ def main(M,N,K,test,trials, blis=0, eg=0, cfg="carmel", cross=0, c_driver=0):
         bestnr=-1
         cfg_file=cfg+".cfg"
         if c_driver != 0:
-            print("Executing c_driver...")
-            os.system("./c_driver/test_driver_c {} {} {} {} {} {} {} {} {}".format( M, N, K, ini, maxm, stride, ini, maxn, stride))
+            print("Executing c_driver {} {} {} {} {} {} {} {} {} {}".format( M, N, K, ini, maxm, stride, ini, maxn, stride, test))
+            os.system("./c_driver/test_driver_c {} {} {} {} {} {} {} {} {} {}".format( M, N, K, ini, maxm, stride, ini, maxn, stride, test))
         for mr in range(ini,maxm,stride):
             for nr in range(ini,maxn,stride):
 
@@ -400,7 +402,7 @@ def main(M,N,K,test,trials, blis=0, eg=0, cfg="carmel", cross=0, c_driver=0):
             tune_option = auto_scheduler.TuningOptions(
                 num_measure_trials=trials,
                 measure_callbacks=[auto_scheduler.RecordToFile(log_file)],
-                verbose=0,
+                verbose=10,
                 )
 
             # Run auto-tuning (search)
@@ -471,9 +473,11 @@ if __name__ == "__main__":
             #[4000, 4000, 4000], 
             #[5000, 5000, 5000], 
             ]
-    #MNK = [[49*bs, 2048, 512]]
+    MNK = [[49*bs, 2048, 512]]
     #MNK = [[2048, 49, 512]]
-    MNK =  [[12544, 64, 147], [1024,1024,1024]]
+    #MNK =  [[12544, 64, 147], [1024,1024,1024]]
+    MNK =  [[1024,1024,1024]]
+    #MNK =  [[1000,700,800]]
     if google != 0:
         import googlenet as gl
         MNK = gl.googlenet(bs)

@@ -22,19 +22,48 @@ TVM_ROOT=/home/adcastel/src/tvm
 
 DMLC_CORE=${TVM_ROOT}/3rdparty/dmlc-core
 
-PKG_CFLAGS = -std=c++17 -O2 -fPIC\
+PKG_CFLAGS = -std=c++17 -fPIC\
 	-I${TVM_ROOT}/include\
 	-I${DMLC_CORE}/include\
 	-I${TVM_ROOT}/3rdparty/dlpack/include\
 	-DDMLC_USE_LOGGING_LIBRARY=\<tvm/runtime/logging.h\>
 
-CXX=g++
+CXX=g++-13
+#CXX=clang++-10
+FLAGS=-O3 -march=armv8.2-a+simd+fp+fp16fml+fp16
 #CXX=clang++-10
 PKG_LDFLAGS = -L${TVM_ROOT}/build -ldl -pthread
-DTYPEA=float32
-DTYPEB=float32
-DTYPEC=float32
+ifeq ($(TEST), 1)
+    DTYPEA=float32
+    DTYPEB=float32
+    DTYPEC=float32
+    else ifeq ($(TEST),2)
+    DTYPEA=float16
+    DTYPEB=float16
+    DTYPEC=float32
+    else ifeq ($(TEST),3)
+    DTYPEA=int8
+    DTYPEB=int8
+    DTYPEC=float32
+    else ifeq ($(TEST),4)
+    DTYPEA=int8
+    DTYPEB=int8
+    DTYPEC=float16
+    else ifeq ($(TEST),5)
+    DTYPEA=int8
+    DTYPEB=int8
+    DTYPEC=int32
+    else ifeq ($(TEST),6)
+    DTYPEA=int8
+    DTYPEB=int8
+    DTYPEC=int16
+    else
+    DTYPEA=float16
+    DTYPEB=float16
+    DTYPEC=float16
+endif
 OBJS=$(wildcard ../lib/${DTYPEA}${DTYPEB}${DTYPEC}/*.o)
+#OBJS=$(wildcard ../lib/*/*.o)
 .PHONY: clean all
 
 #MICRO = ../lib/eg_matmul_$(M)_$(N)_$(K)_$(MR)_$(NR).o \
@@ -69,7 +98,7 @@ libtvm_runtime_pack.o: tvm_runtime_pack.cc
 #test_driver_c: cpp_deploy.cc $(MICRO) 
 test_driver_c: cpp_deploy.cc $(OBJS) libtvm_runtime_pack.o 
 	touch cpp_deploy.cc
-	$(CXX) $(PKG_CFLAGS) -o $@  $^ $(PKG_LDFLAGS)
+	$(CXX) $(FLAGS) $(PKG_CFLAGS) -o $@  $^ $(PKG_LDFLAGS)
 #$(CXX) $(PKG_CFLAGS) -o $@  $^ -ltvm_runtime $(PKG_LDFLAGS)
 clean:
 	rm -rf lib/* build/* test_driver_c *.s *.o
