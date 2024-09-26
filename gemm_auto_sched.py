@@ -481,6 +481,12 @@ if __name__ == "__main__":
     if google != 0:
         import googlenet as gl
         MNK = gl.googlenet(bs)
+    #bgemm
+    MNK =  [[384, 384, 64], 
+            [64, 384, 384],
+            [128, 128, 64],
+            [64, 128, 128]
+            ]
     
     if c_driver != 0:
         print("Executing c_driver...")
