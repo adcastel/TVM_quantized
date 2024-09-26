@@ -411,9 +411,11 @@ def main(M,N,K,test,trials, blis=0, eg=0, cfg="carmel", cross=0, c_driver=0):
         sch, args = task.apply_best(log_file)
 
         print("Lowered TIR:")
-        print(tvm.lower(sch, args, simple_mode=True))
+        f = tvm.lower(sch, args, name="auto_{}_{}_{}_{}".format(M,N,K,typeC),simple_mode=True)
+        print(f)
     
-        func = tvm.build(sch, args, target)
+        #func = tvm.build(sch, args, target)
+        func = tvm.build(f, target)
     
         
         func.save("auto_{}_{}{}/{}_{}_{}.s".format(trials,folder,"_blis" if blis == 1 else "",M,N,K), 's')
